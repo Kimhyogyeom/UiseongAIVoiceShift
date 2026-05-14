@@ -11,8 +11,8 @@ public class WebSocketClient : MonoBehaviour
 
     [Header("Connection")]
     [SerializeField] private string baseUrl = "wss://dev-api.uiseong.ai.kr";
-    [SerializeField] private string boothId = "20";
-    [SerializeField] private string boothSecret = "bsk_dz9qUuRuLo9b5e2k";
+    [SerializeField] private string boothId = "17";
+    [SerializeField] private string boothSecret = "bsk_n2yTvziKEKs3xNxO";
 
     [Header("Reconnect")]
     [SerializeField] private float initialBackoffSeconds = 1f;
@@ -89,6 +89,9 @@ public class WebSocketClient : MonoBehaviour
 
     void OnClose(WebSocketCloseCode code)
     {
+        // Editor Play 정지로 인스턴스가 destroyed 이후 비동기 콜백이 늦게 도착하는 경우 방어
+        if (this == null || reconnectDisabled) return;
+
         Debug.LogWarning($"[WS] Closed: {code} ({(int)code})");
 
         if ((int)code == 4001)
@@ -101,6 +104,12 @@ public class WebSocketClient : MonoBehaviour
         Debug.Log($"[WS] Reconnecting in {currentBackoff:F1}s");
         Invoke(nameof(Reconnect), currentBackoff);
         currentBackoff = Mathf.Min(currentBackoff * 2f, maxBackoffSeconds);
+    }
+
+    void OnDestroy()
+    {
+        // 인스턴스 파괴 후 OnClose 등 비동기 콜백이 Invoke/Reconnect 시도하는 걸 막음
+        reconnectDisabled = true;
     }
 
     async void Reconnect()
@@ -184,6 +193,38 @@ public class WebSocketClient : MonoBehaviour
         ackWatchdog = StartCoroutine(AckTimeoutWatchdog(CurrentSessionId));
     }
 
+    // 진행 중 세션을 서버에 중단 통보. IN_PROGRESS 상태에서만 유효 (§3.4).
+    // 성공 시 서버가 ABORTED로 전이 + ACK 응답. fire-and-forget.
+    public async Task SendSessionAbort()
+    {
+        if (ws == null || ws.State != WebSocketState.Open)
+        {
+            Debug.LogWarning("[WS] Cannot send SESSION_ABORT: socket not open");
+            return;
+        }
+        if (CurrentSessionId == 0 || string.IsNullOrEmpty(CurrentStartToken))
+        {
+            Debug.Log("[WS] No active session to abort");
+            return;
+        }
+
+        var payload = new SessionAbortMessage
+        {
+            type = "SESSION_ABORT",
+            sessionId = CurrentSessionId,
+            startToken = CurrentStartToken,
+        };
+        string json = JsonUtility.ToJson(payload);
+        Debug.Log($"[WS] Send: {json}");
+        await ws.SendText(json);
+    }
+
+    public void ClearCurrentSession()
+    {
+        CurrentSessionId = 0;
+        CurrentStartToken = null;
+    }
+
     IEnumerator AckTimeoutWatchdog(int sessionId)
     {
         yield return new WaitForSeconds(ackTimeoutSeconds);
@@ -208,8 +249,33 @@ public class WebSocketClient : MonoBehaviour
 
     async void OnApplicationQuit()
     {
-        if (ws != null)
-            await ws.Close();
+        if (ws == null) return;
+
+        // 진행 중 세션이 있으면 ABORT 시도 후 닫기.
+        // Editor에서 Play를 즉시 정지하면 메시지가 서버에 도달 못 할 수 있음 (best effort).
+        if (ws.State == WebSocketState.Open
+            && CurrentSessionId != 0
+            && !string.IsNullOrEmpty(CurrentStartToken))
+        {
+            try
+            {
+                var payload = new SessionAbortMessage
+                {
+                    type = "SESSION_ABORT",
+                    sessionId = CurrentSessionId,
+                    startToken = CurrentStartToken,
+                };
+                string json = JsonUtility.ToJson(payload);
+                Debug.Log($"[WS] Send (on quit): {json}");
+                await ws.SendText(json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[WS] SESSION_ABORT on quit failed: {e.Message}");
+            }
+        }
+
+        await ws.Close();
     }
 
     [Serializable]
@@ -230,5 +296,13 @@ public class WebSocketClient : MonoBehaviour
         public int sessionId;
         public string startToken;
         public string startedAt;
+    }
+
+    [Serializable]
+    class SessionAbortMessage
+    {
+        public string type;
+        public int sessionId;
+        public string startToken;
     }
 }

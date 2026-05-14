@@ -9,10 +9,56 @@ using TMPro;
 
 public class GameManager : MonoBehaviour
 {
+    public static GameManager Instance { get; private set; }
+
     [Header("Panels")]
-    public GameObject titlePanel;      // 1번: 타이틀 화면
-    public GameObject qrPanel;         // 2번: QR 화면
-    public GameObject genrePanel;      // 3번: 장르 선택 화면
+    public GameObject titlePanel;      // 1번: 타이틀 화면 (QR 패널을 자식으로 포함)
+    public GameObject qrPanel;         // 2번: QR 화면 (TitlePanel의 자식)
+    public GameObject languagePanel;   // 3번: 언어 선택 화면
+    public GameObject cameraPanel;     // 4번: 카메라 조정 화면
+    public GameObject headsetPanel;    // 5번: 헤드셋 준비 화면 (5초 타이머, 구성은 다음 단계)
+    public GameObject genrePanel;      // (구) 무비디렉터 잔재 — 사용 안 함, 점진 정리 예정
+
+    [Header("Language Selection")]
+    public LanguageButton[] sourceLanguageButtons;  // 위 row (지금 쓰는 언어) 6개
+    public LanguageButton[] targetLanguageButtons;  // 아래 row (변환할 언어) 6개
+    public Button languageNextButton;               // "다음으로" 버튼
+
+    string selectedSourceLang;
+    string selectedTargetLang;
+
+    [Header("Camera Countdown")]
+    public Button cameraOkButton;            // CameraPanel의 OK 버튼 (카운트다운 시작 후 비활성화)
+    public TMP_Text cameraCountdownText;     // 카메라 영상 위에 표시되는 카운트다운 숫자
+    [Tooltip("OK 버튼 클릭 후 카운트다운 시작 숫자 (초)")]
+    public int cameraCountdownStart = 5;
+
+    Coroutine cameraCountdownCoroutine;
+
+    [Header("Voice Recording")]
+    public Image voicePulseImage;            // (선택) 단일 동그라미 파동 — 안 쓰면 비워둠
+    public VoiceWaveform voiceWaveform;      // (선택) 막대 N개 파형 시각화 — 사용자 이미지 스타일
+    public TMP_Text recordingTimerText;      // 파동 아래 30초 타이머
+    [Tooltip("녹음 시간 (초)")]
+    public int recordingDuration = 30;
+    [Tooltip("음량 → 시각화 강도 민감도 (단일 동그라미 + 파형 막대 공통)")]
+    public float pulseSensitivity = 10f;
+    public float pulseMinScale = 1f;
+    public float pulseMaxScale = 1.5f;
+
+    Coroutine recordingTimerCoroutine;
+    AudioClip micClip;
+    string micDeviceName;
+    bool isRecording;
+
+    [Header("Video Recorder (영상 + 마이크 통합 녹화 → mp4)")]
+    public VideoRecorder videoRecorder;
+
+    [Header("Translation Loading")]
+    [Tooltip("번역 게이지바 진행 시간 (초). 실제 API 응답 도착하면 단축됨.")]
+    public float translationDuration = 30f;
+
+    Coroutine translationCoroutine;
     public GameObject confirmPanel;    // 4번: "이 주제로 영상을 만들어볼까?" 확인 팝업 (장르)
     public GameObject scenarioPanel;   // 5번: "시나리오를 적어주세요!" 화면
     public GameObject examplePanel;    // 6번: 예시 선택 팝업
@@ -68,9 +114,20 @@ public class GameManager : MonoBehaviour
     string currentVideoUrl;
     Coroutine loadingBarCoroutine;
 
+    void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+    }
+
     void Start()
     {
         ResetAllPanelsImmediate();
+        UpdateLanguageNextButton();
 
         if (fadeOverlay != null)
         {
@@ -103,6 +160,13 @@ public class GameManager : MonoBehaviour
         {
             videoPlayer.prepareCompleted += OnVideoPrepared;
             videoPlayer.errorReceived += OnVideoError;
+        }
+
+        if (videoRecorder != null)
+        {
+            videoRecorder.OnRecordingStopped += HandleRecorderStopped;
+            videoRecorder.OnRecordingComplete += HandleRecorderComplete;
+            videoRecorder.OnProgress += HandleRecorderProgress;
         }
     }
 
@@ -182,6 +246,7 @@ public class GameManager : MonoBehaviour
     void Update()
     {
         UpdateVideoProgress();
+        UpdatePulseScale();
 
 #if UNITY_EDITOR
         if (qrPanel != null && qrPanel.activeSelf && !isTransitioning
@@ -247,13 +312,68 @@ public class GameManager : MonoBehaviour
             videoPlayer.prepareCompleted -= OnVideoPrepared;
             videoPlayer.errorReceived -= OnVideoError;
         }
+
+        if (videoRecorder != null)
+        {
+            videoRecorder.OnRecordingStopped -= HandleRecorderStopped;
+            videoRecorder.OnRecordingComplete -= HandleRecorderComplete;
+            videoRecorder.OnProgress -= HandleRecorderProgress;
+        }
     }
 
     void ResetAllPanelsImmediate()
     {
-        titlePanel.SetActive(true);
-        qrPanel.SetActive(false);
-        genrePanel.SetActive(false);
+        if (titlePanel != null) titlePanel.SetActive(true);
+        if (qrPanel != null) qrPanel.SetActive(false);
+        if (languagePanel != null) languagePanel.SetActive(false);
+        if (cameraPanel != null) cameraPanel.SetActive(false);
+        if (headsetPanel != null) headsetPanel.SetActive(false);
+        if (genrePanel != null) genrePanel.SetActive(false);
+
+        // 언어 선택 상태 리셋
+        selectedSourceLang = null;
+        selectedTargetLang = null;
+        if (sourceLanguageButtons != null)
+            foreach (var b in sourceLanguageButtons) if (b != null) b.SetSelected(false);
+        if (targetLanguageButtons != null)
+            foreach (var b in targetLanguageButtons) if (b != null) b.SetSelected(false);
+        UpdateLanguageNextButton();
+
+        // 카메라 카운트다운 상태 리셋
+        if (cameraCountdownCoroutine != null)
+        {
+            StopCoroutine(cameraCountdownCoroutine);
+            cameraCountdownCoroutine = null;
+        }
+        if (cameraCountdownText != null) cameraCountdownText.text = "";
+        if (cameraOkButton != null)
+        {
+            cameraOkButton.gameObject.SetActive(true);
+            cameraOkButton.interactable = true;
+        }
+
+        // 녹음 상태 리셋
+        if (recordingTimerCoroutine != null)
+        {
+            StopCoroutine(recordingTimerCoroutine);
+            recordingTimerCoroutine = null;
+        }
+        // VideoRecorder가 진행 중이면 즉시 중단 (마이크 + 프레임 캡처 정리)
+        if (videoRecorder != null && videoRecorder.IsRecording)
+            videoRecorder.CancelRecording();
+
+        StopRecording();
+        if (recordingTimerText != null) recordingTimerText.text = "";
+        if (voicePulseImage != null) voicePulseImage.gameObject.SetActive(false);
+        if (voiceWaveform != null) voiceWaveform.gameObject.SetActive(false);
+
+        // 번역 진행 상태 리셋
+        if (translationCoroutine != null)
+        {
+            StopCoroutine(translationCoroutine);
+            translationCoroutine = null;
+        }
+        if (loadingBarFill != null) loadingBarFill.fillAmount = 0f;
         if (confirmPanel != null) confirmPanel.SetActive(false);
         if (scenarioPanel != null) scenarioPanel.SetActive(false);
         if (examplePanel != null) examplePanel.SetActive(false);
@@ -286,8 +406,8 @@ public class GameManager : MonoBehaviour
         // 결과 화면에 보여줄 제목 미리 결정
         currentResultTitle = BuildResultTitle(genre, prompt);
 
-        Debug.Log($"[GameManager] 결과 제출 요청 sessionId={sessionId} genre={genre}->{genreCode} promptLen={finalPrompt.Length} title={currentResultTitle}");
-        APIManager.Instance.SubmitMovieResult(sessionId, startToken, directorValue, genreCode, finalPrompt);
+        Debug.Log($"[GameManager] (무비디렉터 잔재) SubmitToServer 호출됨 — 보이스 시프트는 SubmitToVoiceShift 사용");
+        // 무비디렉터 잔재 — 보이스 시프트는 VideoRecorder.OnRecordingComplete → SubmitToVoiceShift 흐름
     }
 
     // 결과 패널에 표시할 영화 제목 구성
@@ -303,6 +423,282 @@ public class GameManager : MonoBehaviour
         }
         // 장르 버튼 선택: 장르명 그대로
         return string.IsNullOrEmpty(genre) ? "AI 영화" : genre;
+    }
+
+    // === 언어 선택 ===
+
+    // LanguageButton에서 호출. 같은 row 안에서 단일 선택으로 전환.
+    public void OnLanguageButtonClicked(LanguageButton btn)
+    {
+        if (isTransitioning || btn == null) return;
+
+        if (btn.slot == LanguageButton.LangSlot.Source)
+        {
+            selectedSourceLang = btn.langCode;
+            if (sourceLanguageButtons != null)
+                foreach (var b in sourceLanguageButtons) if (b != null) b.SetSelected(b == btn);
+        }
+        else
+        {
+            selectedTargetLang = btn.langCode;
+            if (targetLanguageButtons != null)
+                foreach (var b in targetLanguageButtons) if (b != null) b.SetSelected(b == btn);
+        }
+
+        Debug.Log($"[GameManager] 언어 선택 source={selectedSourceLang} target={selectedTargetLang}");
+        UpdateLanguageNextButton();
+    }
+
+    void UpdateLanguageNextButton()
+    {
+        if (languageNextButton == null) return;
+        languageNextButton.interactable = !string.IsNullOrEmpty(selectedSourceLang)
+                                       && !string.IsNullOrEmpty(selectedTargetLang);
+    }
+
+    // LanguagePanel의 "다음으로" 버튼 OnClick
+    public void OnLanguageNext()
+    {
+        if (isTransitioning) return;
+        if (string.IsNullOrEmpty(selectedSourceLang) || string.IsNullOrEmpty(selectedTargetLang)) return;
+
+        Debug.Log($"[GameManager] 언어 확정 → 카메라 조정 화면 source={selectedSourceLang} target={selectedTargetLang}");
+
+        StartCoroutine(TransitionTo(() =>
+        {
+            if (languagePanel != null) languagePanel.SetActive(false);
+            if (cameraPanel != null) cameraPanel.SetActive(true);
+        }));
+    }
+
+    // CameraPanel의 "OK" 버튼 OnClick → 카운트다운 시작 (카메라 영상은 그대로 유지)
+    public void OnCameraOkClick()
+    {
+        if (isTransitioning) return;
+        if (cameraCountdownCoroutine != null) return;  // 중복 방지
+
+        Debug.Log("[GameManager] 카메라 OK → 카운트다운 시작");
+
+        if (cameraOkButton != null) cameraOkButton.interactable = false;
+        cameraCountdownCoroutine = StartCoroutine(CameraCountdown());
+    }
+
+    IEnumerator CameraCountdown()
+    {
+        for (int i = cameraCountdownStart; i >= 1; i--)
+        {
+            if (cameraCountdownText != null) cameraCountdownText.text = i.ToString();
+            yield return new WaitForSeconds(1f);
+        }
+
+        if (cameraCountdownText != null) cameraCountdownText.text = "";
+        cameraCountdownCoroutine = null;
+
+        Debug.Log("[GameManager] 5초 카운트다운 종료 → 녹음 시작");
+        StartRecording();
+    }
+
+    // === 녹음 (말하는 화면) ===
+
+    void StartRecording()
+    {
+        // OK 버튼 숨김
+        if (cameraOkButton != null) cameraOkButton.gameObject.SetActive(false);
+
+        // 파동/파형 활성화
+        if (voicePulseImage != null)
+        {
+            voicePulseImage.gameObject.SetActive(true);
+            voicePulseImage.rectTransform.localScale = Vector3.one * pulseMinScale;
+        }
+        if (voiceWaveform != null) voiceWaveform.gameObject.SetActive(true);
+
+        // 영상 + 마이크 통합 녹화를 VideoRecorder에 위임
+        // VideoRecorder가 30초 타이머, 마이크, 프레임 캡처, ffmpeg mp4 합성 전체 처리
+        if (videoRecorder != null)
+        {
+            videoRecorder.StartRecording();
+        }
+        else
+        {
+            Debug.LogError("[GameManager] VideoRecorder 미연결 — Inspector에서 연결 필요");
+        }
+    }
+
+    IEnumerator RecordingTimer()
+    {
+        for (int i = recordingDuration; i >= 1; i--)
+        {
+            if (recordingTimerText != null) recordingTimerText.text = i.ToString();
+            yield return new WaitForSeconds(1f);
+        }
+
+        if (recordingTimerText != null) recordingTimerText.text = "";
+        recordingTimerCoroutine = null;
+
+        StopRecording();
+
+        Debug.Log("[GameManager] 30초 녹음 종료 → 번역 시작");
+        StartTranslation();
+    }
+
+    // === 번역 진행 (LoadingPanel) ===
+
+    void StartTranslation()
+    {
+        // CameraPanel은 그대로 두고 (카메라 영상 유지), 자식 LoadingPanel만 오버레이로 활성화
+        StartCoroutine(TransitionTo(() =>
+        {
+            if (loadingPanel != null) loadingPanel.SetActive(true);
+        }));
+
+        // 게이지바 진행 (시간 기반) — 실제 API 호출은 다음 단계에서 추가
+        if (translationCoroutine != null) StopCoroutine(translationCoroutine);
+        translationCoroutine = StartCoroutine(TranslationProgress());
+
+        // TODO: 영상 녹화 mp4 파일 + outputLanguage(selectedTargetLang) → APIManager_VoiceShift.SubmitResult 호출
+        // TODO: WebSocket RESULT_READY 수신 시 게이지바 100% + ResultPanel 전환
+    }
+
+    IEnumerator TranslationProgress()
+    {
+        if (loadingBarFill != null) loadingBarFill.fillAmount = 0f;
+
+        float duration = Mathf.Max(0.01f, translationDuration);
+        float t = 0f;
+        // 95%까지만 시간 기반 진행. 100%는 API 응답 도착 시 CompleteTranslation에서 처리.
+        const float maxFillBeforeDone = 0.95f;
+        while (t < duration)
+        {
+            t += Time.deltaTime;
+            if (loadingBarFill != null)
+                loadingBarFill.fillAmount = Mathf.Min(maxFillBeforeDone, t / duration);
+            yield return null;
+        }
+
+        // 시간 만료해도 95%에서 대기. 응답 안 오면 계속 95% 유지.
+        if (loadingBarFill != null) loadingBarFill.fillAmount = maxFillBeforeDone;
+        translationCoroutine = null;
+    }
+
+    // API 응답(200 동기 또는 WS RESULT_READY) 도착 시 호출. 게이지바 100% + 로그.
+    void CompleteTranslation()
+    {
+        if (translationCoroutine != null)
+        {
+            StopCoroutine(translationCoroutine);
+            translationCoroutine = null;
+        }
+        if (loadingBarFill != null) loadingBarFill.fillAmount = 1f;
+
+        Debug.Log("[번역 완료]");
+        // TODO: 다음 단계 — ResultPanel 전환 + GENERATED_VIDEO 재생
+    }
+
+    // === VideoRecorder 이벤트 핸들러 ===
+
+    // 30초 진행률 (0~1). 30초 카운트다운 텍스트 갱신.
+    void HandleRecorderProgress(float progress01)
+    {
+        if (recordingTimerText != null)
+        {
+            float remaining = recordingDuration * (1f - progress01);
+            recordingTimerText.text = Mathf.CeilToInt(Mathf.Max(0f, remaining)).ToString();
+        }
+    }
+
+    // 30초 녹화 타이머 종료 즉시 호출 (ffmpeg 합성은 백그라운드). LoadingPanel 즉시 활성.
+    void HandleRecorderStopped()
+    {
+        Debug.Log("[GameManager] 30초 녹화 종료 → LoadingPanel 활성 (ffmpeg 합성 진행 중)");
+        if (recordingTimerText != null) recordingTimerText.text = "";
+        StartTranslation();
+    }
+
+    // ffmpeg 합성까지 끝난 뒤 호출. 성공 시 mp4Path, 실패 시 errorMsg.
+    void HandleRecorderComplete(string mp4Path, string errorMsg)
+    {
+        if (string.IsNullOrEmpty(mp4Path))
+        {
+            Debug.LogError($"[GameManager] 녹화/합성 실패 reason={errorMsg}");
+            // TODO: 에러 UI 안내. 일단 메인 복귀
+            ResetToTitle();
+            return;
+        }
+
+        Debug.Log($"[GameManager] mp4 합성 완료 → API 제출 시작 mp4={mp4Path}");
+        SubmitToVoiceShift(mp4Path);
+    }
+
+    // 보이스 시프트 결과 제출 API 호출.
+    void SubmitToVoiceShift(string mp4Path)
+    {
+        if (WebSocketClient.Instance == null || APIManager.Instance == null)
+        {
+            Debug.LogError("[GameManager] WebSocketClient/APIManager Instance 없음");
+            return;
+        }
+
+        int sessionId = WebSocketClient.Instance.CurrentSessionId;
+        string startToken = WebSocketClient.Instance.CurrentStartToken;
+
+        if (sessionId == 0 || string.IsNullOrEmpty(startToken))
+        {
+            Debug.LogError("[GameManager] sessionId/startToken 없음 — 세션이 시작되지 않은 상태");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(selectedTargetLang))
+        {
+            Debug.LogError("[GameManager] selectedTargetLang 없음 — 언어 선택 안 됨");
+            return;
+        }
+
+        Debug.Log($"[GameManager] 결과 제출 요청 sessionId={sessionId} outputLang={selectedTargetLang}");
+        APIManager.Instance.SubmitResult(sessionId, startToken, mp4Path, selectedTargetLang);
+    }
+
+    void StopRecording()
+    {
+        if (videoRecorder != null && videoRecorder.IsRecording)
+            videoRecorder.CancelRecording();
+
+        if (voicePulseImage != null)
+            voicePulseImage.rectTransform.localScale = Vector3.one * pulseMinScale;
+    }
+
+    void UpdatePulseScale()
+    {
+        // VideoRecorder가 보유한 마이크 클립을 사용해 음량 시각화
+        if (videoRecorder == null || !videoRecorder.IsMicActive || videoRecorder.MicClip == null) return;
+
+        int pos = Microphone.GetPosition(videoRecorder.MicDevice) - 128;
+        if (pos < 0) return;
+
+        float[] samples = new float[128];
+        videoRecorder.MicClip.GetData(samples, pos);
+
+        float sum = 0f;
+        for (int i = 0; i < samples.Length; i++)
+            sum += samples[i] * samples[i];
+
+        float rms = Mathf.Sqrt(sum / samples.Length);
+        float level = Mathf.Clamp01(rms * pulseSensitivity);
+
+        // [DEBUG] 음량 측정 확인 — 동작 검증 후 제거
+        if (Time.frameCount % 30 == 0)
+            Debug.Log($"[Voice] rms={rms:F4} level={level:F2} sensitivity={pulseSensitivity}");
+
+        // 단일 동그라미 파동 — scale 조절
+        if (voicePulseImage != null)
+        {
+            float scale = Mathf.Lerp(pulseMinScale, pulseMaxScale, level);
+            voicePulseImage.rectTransform.localScale = Vector3.one * scale;
+        }
+
+        // 막대 파형 — 각 막대 높이 조절
+        if (voiceWaveform != null)
+            voiceWaveform.SetLevel(level);
     }
 
     // 한글 장르명 → 백엔드 enum 매핑
@@ -325,23 +721,22 @@ public class GameManager : MonoBehaviour
 
     void HandleResultSuccess(APIManager.ResultData data)
     {
-        StopLoadingBarAnimation();
-
         string videoUrl = data.result != null && data.result.contents != null
             ? data.result.contents.GENERATED_VIDEO : null;
-        Debug.Log($"[GameManager] 결과 수신 성공 qrPayload={data.qrPayload} video={videoUrl}");
+        Debug.Log($"[GameManager] 결과 수신 성공 (200) qrPayload={data.qrPayload} video={videoUrl}");
 
         currentQrPayload = data.qrPayload;
         currentVideoUrl = videoUrl;
 
-        // 사용자가 홈으로 나가 있을 수 있으니, 로딩 패널 활성 상태일 때만 결과 전환
+        // LoadingPanel 활성 상태일 때만 완료 처리
         if (loadingPanel == null || !loadingPanel.activeSelf)
         {
-            Debug.Log("[GameManager] 결과 수신했지만 로딩 패널 비활성 — 결과 전환 스킵");
+            Debug.Log("[GameManager] 결과 수신했지만 LoadingPanel 비활성 — 결과 전환 스킵");
             return;
         }
 
-        StartCoroutine(CompleteAndTransitionToResult());
+        CompleteTranslation();
+        // TODO: ResultPanel 전환 + 영상 재생 (다음 단계)
     }
 
     [Header("Loading → Result Transition")]
@@ -440,13 +835,13 @@ public class GameManager : MonoBehaviour
         ResetToTitle();
     }
 
-    // HTTP 202 수신 — 백엔드가 비동기 처리 중. 로딩 화면 유지, WebSocket RESULT_READY 대기.
+    // HTTP 202 수신 — 백엔드 비동기 처리 중. LoadingPanel 그대로 유지, RESULT_READY 대기.
     void HandleResultAccepted(int sessionId)
     {
         Debug.Log($"[GameManager] 결과 비동기 접수됨 sessionId={sessionId} — RESULT_READY 대기");
     }
 
-    // WebSocket RESULT_READY 수신 — 비동기 결과 도착. 기존 200 처리 로직 재사용.
+    // WebSocket RESULT_READY 수신 — 비동기 결과 도착. 200 처리와 동일 흐름.
     void HandleResultReady(int sessionId, string qrPayload, APIManager.ResultInner result)
     {
         var data = new APIManager.ResultData
@@ -469,13 +864,15 @@ public class GameManager : MonoBehaviour
         Debug.Log($"[GameManager] Session begin received (sessionId={sessionId})");
 
         if (isTransitioning) return;
-        if (!qrPanel.activeSelf) return;
+        if (qrPanel == null || !qrPanel.activeSelf) return;
 
         StartCoroutine(TransitionTo(() =>
         {
-            titlePanel.SetActive(false);
-            qrPanel.SetActive(false);
-            genrePanel.SetActive(true);
+            // QR 패널은 TitlePanel 자식이라 부모와 함께 꺼지지만,
+            // 다음 메인 복귀 시 자동으로 다시 보이는 걸 막기 위해 명시적으로 끔
+            if (qrPanel != null) qrPanel.SetActive(false);
+            if (titlePanel != null) titlePanel.SetActive(false);
+            if (languagePanel != null) languagePanel.SetActive(true);
             _ = WebSocketClient.Instance.SendSessionStarted();
         }));
     }
@@ -541,13 +938,22 @@ public class GameManager : MonoBehaviour
     {
         if (isTransitioning) return;
 
+        // QR 진입 시점에 진행 중 세션이 메모리에 남아있으면 미리 abort.
+        // ResetToTitle 경로를 거치지 않고 메인으로 돌아온 경우를 위한 안전망.
+        if (WebSocketClient.Instance != null && WebSocketClient.Instance.CurrentSessionId != 0)
+        {
+            Debug.Log($"[GameManager] QR 진입 — 이전 세션 사전 abort sessionId={WebSocketClient.Instance.CurrentSessionId}");
+            _ = WebSocketClient.Instance.SendSessionAbort();
+            WebSocketClient.Instance.ClearCurrentSession();
+        }
+
         StartCoroutine(TransitionTo(() =>
         {
             qrPanel.SetActive(true);
 
             if (qrImage != null && QRGenerator.Instance != null)
             {
-                QRGenerator.Instance.ShowQR("experience-start:20", qrImage);
+                QRGenerator.Instance.ShowQR("experience-start:17", qrImage);
             }
         }));
     }
@@ -755,6 +1161,14 @@ public class GameManager : MonoBehaviour
 
     void ResetToTitle()
     {
+        // 진행 중인 세션이 서버에 남아 있으면 ABORT 송신 — 다음 QR 스캔 시 "이미 진행 중" 충돌 방지
+        if (WebSocketClient.Instance != null && WebSocketClient.Instance.CurrentSessionId != 0)
+        {
+            Debug.Log($"[GameManager] 홈 복귀 — 세션 중단 요청 sessionId={WebSocketClient.Instance.CurrentSessionId}");
+            _ = WebSocketClient.Instance.SendSessionAbort();
+            WebSocketClient.Instance.ClearCurrentSession();
+        }
+
         if (videoPlayer != null) videoPlayer.Stop();
         StopLoadingBarAnimation();
 

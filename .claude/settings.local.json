@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s https://api.github.com/repos/micjahn/ZXing.Net/releases/latest)",
+      "Bash(mkdir -p \"c:/Unity_Project/UiseongAIVoiceShift/Assets/Plugins\")",
+      "Read(//c/tmp/**)",
+      "Bash(curl -L -o zxing.zip \"https://github.com/micjahn/ZXing.Net/releases/download/v0.16.11.0/ZXing.Net.Bindings.0.16.11.0.zip\")",
+      "Bash(unzip -l zxing.zip)",
+      "Bash(curl -L -o zxing-main.zip \"https://github.com/micjahn/ZXing.Net/releases/download/v0.16.11.0/ZXing.Net.0.16.11.0.zip\")",
+      "Bash(unzip -l zxing-main.zip)",
+      "Bash(unzip -j -o zxing-main.zip \"netstandard/2.1/zxing.dll\" -d /tmp/zxing-extract/)",
+      "Bash(cp /tmp/zxing-extract/zxing.dll \"c:/Unity_Project/UiseongAIVoiceShift/Assets/Plugins/zxing.dll\")",
+      "Bash(curl -L -o /tmp/ffmpeg.zip \"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\")",
+      "Bash(unzip -l /tmp/ffmpeg.zip)",
+      "Bash(unzip -j -o /tmp/ffmpeg.zip \"ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe\" -d \"c:/Unity_Project/UiseongAIVoiceShift/Assets/StreamingAssets/ffmpeg/\")"
+    ]
+  }
+}

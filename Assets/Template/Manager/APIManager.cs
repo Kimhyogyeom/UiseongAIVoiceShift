@@ -1,23 +1,32 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
 
+// AI 보이스 시프트 결과 제출 API 매니저.
+//   POST /api/v1/experience/sessions/{sessionId}/result  (multipart/form-data)
+//     Header : X-Start-Token = {startToken}
+//     Fields : visitorVideo (binary mp4), outputLanguage (ko|en|ja|zh|es|fr)
+//     Resp   : 200(동기) data.result.contents.GENERATED_VIDEO
+//              202(비동기) data.sessionId → WebSocket RESULT_READY 대기
+//
+// 서버 스펙 상 sourceLanguage 필드는 없음 (서버가 음성에서 자동 인식).
 public class APIManager : MonoBehaviour
 {
     public static APIManager Instance { get; private set; }
 
     [Header("Server")]
-    [SerializeField] private string baseUrl = "https://dev-api.uiseong.ai.kr";
+    [SerializeField] string baseUrl = "https://dev-api.uiseong.ai.kr";
 
     [Header("Timeout")]
-    [Tooltip("AI 영상 생성이 수 분 걸릴 수 있음. 넉넉하게.")]
-    [SerializeField] private int timeoutSeconds = 600;
+    [Tooltip("fal HeyGen Translate 처리에 수 분 걸릴 수 있음. 넉넉하게.")]
+    [SerializeField] int timeoutSeconds = 600;
 
-    public event Action<ResultData> OnResultSuccess;          // HTTP 200 동기 응답 (즉시 결과)
-    public event Action<int> OnResultAccepted;                 // HTTP 202 비동기 접수 (WebSocket RESULT_READY 대기)
-    public event Action<string, string> OnResultFailure;       // (code, message) — 409/503/네트워크 등 확정 실패
+    public event Action<ResultData> OnResultSuccess;       // HTTP 200 동기 응답
+    public event Action<int> OnResultAccepted;              // HTTP 202 비동기 접수 — WS RESULT_READY 대기
+    public event Action<string, string> OnResultFailure;    // (code, message)
 
     void Awake()
     {
@@ -30,20 +39,38 @@ public class APIManager : MonoBehaviour
         DontDestroyOnLoad(gameObject);
     }
 
-    public void SubmitMovieResult(int sessionId, string startToken, string director, string genre, string prompt)
+    /// <summary>
+    /// visitorVideo(mp4) 파일 + outputLanguage(ISO 639-1 코드) 서버 제출.
+    /// </summary>
+    public void SubmitResult(int sessionId, string startToken, string videoFilePath, string outputLanguage)
     {
-        StartCoroutine(SubmitResultCoroutine(sessionId, startToken, director, genre, prompt));
+        StartCoroutine(SubmitCoroutine(sessionId, startToken, videoFilePath, outputLanguage));
     }
 
-    IEnumerator SubmitResultCoroutine(int sessionId, string startToken, string director, string genre, string prompt)
+    IEnumerator SubmitCoroutine(int sessionId, string startToken, string videoFilePath, string outputLanguage)
     {
+        if (string.IsNullOrEmpty(videoFilePath) || !File.Exists(videoFilePath))
+        {
+            Debug.LogError($"[API] visitorVideo 파일 없음: {videoFilePath}");
+            OnResultFailure?.Invoke("NO_VIDEO_FILE", videoFilePath ?? "");
+            yield break;
+        }
+
+        byte[] videoBytes;
+        try { videoBytes = File.ReadAllBytes(videoFilePath); }
+        catch (Exception e)
+        {
+            Debug.LogError($"[API] 파일 읽기 실패: {e.Message}");
+            OnResultFailure?.Invoke("FILE_READ_ERROR", e.Message);
+            yield break;
+        }
+
         string url = $"{baseUrl}/api/v1/experience/sessions/{sessionId}/result";
 
         var form = new List<IMultipartFormSection>
         {
-            new MultipartFormDataSection("director", director),
-            new MultipartFormDataSection("genre", genre),
-            new MultipartFormDataSection("prompt", prompt),
+            new MultipartFormFileSection("visitorVideo", videoBytes, Path.GetFileName(videoFilePath), "video/mp4"),
+            new MultipartFormDataSection("outputLanguage", outputLanguage),
         };
 
         using (var req = UnityWebRequest.Post(url, form))
@@ -51,14 +78,13 @@ public class APIManager : MonoBehaviour
             req.SetRequestHeader("X-Start-Token", startToken);
             req.timeout = timeoutSeconds;
 
-            Debug.Log($"[API] POST {url} director={director} genre={genre} promptLen={prompt.Length}");
+            Debug.Log($"[API] POST {url} outputLang={outputLanguage} bytes={videoBytes.Length}");
 
             yield return req.SendWebRequest();
 
             string body = req.downloadHandler != null ? req.downloadHandler.text : "";
             long status = req.responseCode;
 
-            // UnityWebRequest.Result는 4xx/5xx도 ProtocolError로 분류함 → status code 기반 분기
             bool transportFailure = req.result == UnityWebRequest.Result.ConnectionError
                                  || req.result == UnityWebRequest.Result.DataProcessingError;
             if (transportFailure)
@@ -89,8 +115,7 @@ public class APIManager : MonoBehaviour
                     {
                         string videoUrl = res.data.result != null && res.data.result.contents != null
                             ? res.data.result.contents.GENERATED_VIDEO : null;
-                        int score = res.data.result != null ? res.data.result.score : 0;
-                        Debug.Log($"[API] 200 SUCCESS qrPayload={res.data.qrPayload} score={score} video={videoUrl}");
+                        Debug.Log($"[API] 200 SUCCESS qrPayload={res.data.qrPayload} video={videoUrl}");
                         OnResultSuccess?.Invoke(res.data);
                     }
                     else
@@ -157,6 +182,7 @@ public class APIManager : MonoBehaviour
     [Serializable]
     public class ResultContents
     {
+        /// 서버가 생성한 번역 립싱크 영상 URL
         public string GENERATED_VIDEO;
     }
 }
