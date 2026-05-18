@@ -16,8 +16,11 @@ public class GameManager : MonoBehaviour
     public GameObject qrPanel;         // 2번: QR 화면 (TitlePanel의 자식)
     public GameObject languagePanel;   // 3번: 언어 선택 화면
     public GameObject cameraPanel;     // 4번: 카메라 조정 화면
-    public GameObject headsetPanel;    // 5번: 헤드셋 준비 화면 (5초 타이머, 구성은 다음 단계)
-    public GameObject genrePanel;      // (구) 무비디렉터 잔재 — 사용 안 함, 점진 정리 예정
+    public GameObject loadingPanel;    // 5번: 번역중 대기 화면 (CameraPanel의 자식, 오버레이)
+    public GameObject resultPanel;     // 6번: 번역 완료 화면 (영상 재생)
+    public GameObject resultQRPanel;   // 7번: 결과 QR 팝업
+    public GameObject headsetPanel;    // (구) 임시 — 사용 안 함
+    public GameObject genrePanel;      // (구) 무비디렉터 잔재 — 사용 안 함
 
     [Header("Language Selection")]
     public LanguageButton[] sourceLanguageButtons;  // 위 row (지금 쓰는 언어) 6개
@@ -59,13 +62,11 @@ public class GameManager : MonoBehaviour
     public float translationDuration = 30f;
 
     Coroutine translationCoroutine;
-    public GameObject confirmPanel;    // 4번: "이 주제로 영상을 만들어볼까?" 확인 팝업 (장르)
-    public GameObject scenarioPanel;   // 5번: "시나리오를 적어주세요!" 화면
-    public GameObject examplePanel;    // 6번: 예시 선택 팝업
-    public GameObject scenarioConfirmPanel; // 7번: "이 내용으로 영상을 만들어볼까요?" 확인 팝업 (시나리오)
-    public GameObject loadingPanel;    // 8번: AI 영상 생성 중 로딩 화면
-    public GameObject resultPanel;     // 9번: 결과 영상 화면
-    public GameObject resultQRPanel;   // 10번: 결과 QR 팝업
+    // 무비디렉터 잔재 — 사용 안 함, 점진 정리 예정
+    public GameObject confirmPanel;
+    public GameObject scenarioPanel;
+    public GameObject examplePanel;
+    public GameObject scenarioConfirmPanel;
 
     [Header("Scenario Input")]
     public TMP_InputField scenarioInput;   // 시나리오 입력 필드
@@ -189,7 +190,7 @@ public class GameManager : MonoBehaviour
         videoPlayer.url = url;
         videoPlayer.renderMode = VideoRenderMode.RenderTexture;
         videoPlayer.playOnAwake = false;
-        videoPlayer.isLooping = false;
+        videoPlayer.isLooping = true;   // 결과 영상 반복 재생
 
         if (videoRT == null)
         {
@@ -223,9 +224,9 @@ public class GameManager : MonoBehaviour
             Debug.Log($"[GameManager] RenderTexture resized to {vp.width}x{vp.height}");
         }
 
-        // 첫 프레임만 렌더링 후 일시정지 (사용자가 "시작" 버튼 눌러야 재생)
+        // 보이스 시프트: 결과 패널 진입 즉시 자동 재생 (isLooping=true로 반복)
         vp.Play();
-        StartCoroutine(PauseAfterFirstFrame());
+        // StartCoroutine(PauseAfterFirstFrame());  // 무비디렉터식 첫 프레임 정지 — 보이스 시프트엔 불필요
 
         // 총 재생 시간 텍스트 초기화
         if (videoTimeTotal != null) videoTimeTotal.text = FormatTime(vp.length);
@@ -385,9 +386,14 @@ public class GameManager : MonoBehaviour
 
     void SubmitToServer(string genre, string prompt)
     {
-        if (WebSocketClient.Instance == null || APIManager.Instance == null)
+        if (WebSocketClient.Instance == null)
         {
-            Debug.LogError("[GameManager] WebSocketClient/APIManager Instance 없음");
+            Debug.LogError("[GameManager] WebSocketClient.Instance 없음 — Hierarchy에 WebSocketClient GameObject 있는지/활성인지 확인");
+            return;
+        }
+        if (APIManager.Instance == null)
+        {
+            Debug.LogError("[GameManager] APIManager.Instance 없음 — Hierarchy에 APIManager GameObject 있는지/활성인지 확인");
             return;
         }
 
@@ -581,7 +587,7 @@ public class GameManager : MonoBehaviour
         translationCoroutine = null;
     }
 
-    // API 응답(200 동기 또는 WS RESULT_READY) 도착 시 호출. 게이지바 100% + 로그.
+    // API 응답(200 동기 또는 WS RESULT_READY) 도착 시 호출. 게이지바 100% + ResultPanel 전환 + 영상 재생.
     void CompleteTranslation()
     {
         if (translationCoroutine != null)
@@ -592,7 +598,10 @@ public class GameManager : MonoBehaviour
         if (loadingBarFill != null) loadingBarFill.fillAmount = 1f;
 
         Debug.Log("[번역 완료]");
-        // TODO: 다음 단계 — ResultPanel 전환 + GENERATED_VIDEO 재생
+
+        // LoadingPanel이 활성 상태이고 영상 URL이 있으면 결과 패널로 전환
+        if (loadingPanel != null && loadingPanel.activeSelf && !string.IsNullOrEmpty(currentVideoUrl))
+            StartCoroutine(CompleteAndTransitionToResult());
     }
 
     // === VideoRecorder 이벤트 핸들러 ===
@@ -633,9 +642,14 @@ public class GameManager : MonoBehaviour
     // 보이스 시프트 결과 제출 API 호출.
     void SubmitToVoiceShift(string mp4Path)
     {
-        if (WebSocketClient.Instance == null || APIManager.Instance == null)
+        if (WebSocketClient.Instance == null)
         {
-            Debug.LogError("[GameManager] WebSocketClient/APIManager Instance 없음");
+            Debug.LogError("[GameManager] WebSocketClient.Instance 없음 — Hierarchy에 WebSocketClient GameObject 있는지/활성인지 확인");
+            return;
+        }
+        if (APIManager.Instance == null)
+        {
+            Debug.LogError("[GameManager] APIManager.Instance 없음 — Hierarchy에 APIManager GameObject 있는지/활성인지 확인");
             return;
         }
 
@@ -774,6 +788,7 @@ public class GameManager : MonoBehaviour
         yield return StartCoroutine(TransitionTo(() =>
         {
             if (loadingPanel != null) loadingPanel.SetActive(false);
+            if (cameraPanel != null) cameraPanel.SetActive(false);  // 보이스 시프트: LoadingPanel의 부모 CameraPanel도 같이 끔
             if (resultPanel != null) resultPanel.SetActive(true);
 
             if (resultTitleText != null)
