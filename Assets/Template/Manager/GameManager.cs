@@ -23,11 +23,11 @@ public class GameManager : MonoBehaviour
     public GameObject genrePanel;      // (구) 무비디렉터 잔재 — 사용 안 함
 
     [Header("Language Selection")]
-    public LanguageButton[] sourceLanguageButtons;  // 위 row (지금 쓰는 언어) 6개
-    public LanguageButton[] targetLanguageButtons;  // 아래 row (변환할 언어) 6개
+    public LanguageButton[] targetLanguageButtons;  // 변환할 언어 6개 (ko / ja / zh / en / de / ru)
     public Button languageNextButton;               // "다음으로" 버튼
 
-    string selectedSourceLang;
+    // 입력 언어는 한국어 고정 — 기획상 별도 선택 UI 없음
+    const string SOURCE_LANG = "ko";
     string selectedTargetLang;
 
     [Header("Camera Countdown")]
@@ -35,6 +35,31 @@ public class GameManager : MonoBehaviour
     public TMP_Text cameraCountdownText;     // 카메라 영상 위에 표시되는 카운트다운 숫자
     [Tooltip("OK 버튼 클릭 후 카운트다운 시작 숫자 (초)")]
     public int cameraCountdownStart = 5;
+
+    [Tooltip("높이 조절 안내 그룹 (텍스트/이미지). 다음으로 클릭 전까지 활성.")]
+    public GameObject cameraPhaseAGroup;
+    [Tooltip("녹음 시작 안내 그룹 (텍스트/이미지). 다음으로 클릭 후 5초 카운트다운 동안 활성.")]
+    public GameObject cameraPhaseBGroup;
+    [Tooltip("녹음 중 그룹 (\"자유롭게 이야기해 보세요\" 텍스트 + 게이지바). 30초 녹음 동안 활성.")]
+    public GameObject cameraPhaseCGroup;
+    [Tooltip("녹음 진행 게이지바. Image (Filled, Horizontal). 0 → 1 채워짐.")]
+    public Image recordingProgressFill;
+    [Tooltip("녹음 남은 시간 텍스트 (\"00:30\" → \"00:00\" 형식).")]
+    public TMP_Text recordingRemainingTimeText;
+
+    [Tooltip("말하기 예시 안내 — Phase B/C 둘 다에서 표시. 사용자 X로 한 번 닫으면 Phase C에서도 다시 안 뜸. 리셋 시 원복.\n주의: 이 오브젝트는 PhaseB/C의 자식이 아니라 CameraPanel 직속 자식으로 둬야 함 (그래야 phase 전환 시에도 표시 유지).")]
+    public GameObject speakingExamplesPanel;
+
+    // 사용자가 X 버튼으로 닫았는지 — Phase B에서 닫으면 Phase C에서도 안 뜸. Reset 시 false로 원복.
+    bool speakingExamplesClosed;
+
+    [Header("Camera Countdown Sprite Animation")]
+    [Tooltip("5초 카운트다운 동안 표시할 스프라이트 Image. 4프레임 애니메이션으로 순환 재생.")]
+    public Image cameraCountdownSpriteImage;
+    [Tooltip("순서대로 재생할 스프라이트 (4개 권장). 1초에 한 번 전체 순환.")]
+    public Sprite[] cameraCountdownSprites;
+    [Tooltip("스프라이트 한 프레임 지속 시간 (초). 4프레임 × 0.25 = 1초 권장.")]
+    public float cameraCountdownFrameDuration = 0.25f;
 
     Coroutine cameraCountdownCoroutine;
 
@@ -78,9 +103,34 @@ public class GameManager : MonoBehaviour
     public RawImage resultQRImage;     // 결과 QR 패널의 RawImage
 
     [Header("Loading Bar")]
-    public Image loadingBarFill;       // Image (Filled, Horizontal) — fillAmount 애니메이션
-    [Tooltip("이 시간 동안 선형으로 0 → 0.99 채워짐 (초). AI 영상 생성 평균 소요시간 참고. 99%에서 정지하고 응답 오면 100%로 채워짐")]
+    public Image loadingBarFill;       // (선택) Image (Filled, Horizontal) — 미연결 시 비표시
+    [Tooltip("이 시간 동안 선형으로 0 → 0.99 채워짐 (초). 게이지바 미사용이면 무의미.")]
     public float loadingBarTargetSeconds = 120f;
+
+    [Header("Loading Panel — Rotating Indicator")]
+    [Tooltip("로딩 패널의 회전 이미지 (Z축 천천히 회전). 미연결이면 회전 안 함.")]
+    public RectTransform loadingRotatingImage;
+    [Tooltip("회전 속도 (deg/sec). 음수면 반대 방향. 기본 30 = 12초에 한 바퀴.")]
+    public float loadingRotationSpeed = 30f;
+
+    [Header("Loading Panel — Target Language Display")]
+    [Tooltip("선택한 변환 언어의 이미지 표시 위치 (Image).")]
+    public Image loadingTargetLanguageImage;
+    [Tooltip("선택한 변환 언어명 텍스트 (\"영어\", \"일본어\" 등).")]
+    public TMP_Text loadingTargetLanguageText;
+    [Tooltip("언어 코드별 표시 매핑. langCode가 selectedTargetLang과 같은 항목의 sprite/displayName이 표시됨.")]
+    public TargetLanguageDisplay[] targetLanguageDisplays;
+
+    [System.Serializable]
+    public class TargetLanguageDisplay
+    {
+        [Tooltip("ISO 639-1 코드: ko / en / ja / zh / de / ru")]
+        public string langCode;
+        [Tooltip("로딩 패널에 표시할 이미지 (국기/심볼 등)")]
+        public Sprite sprite;
+        [Tooltip("표시 텍스트 (\"영어\", \"일본어\" 등)")]
+        public string displayName;
+    }
 
     [Header("Result Video")]
     public VideoPlayer videoPlayer;    // 결과 영상 재생용
@@ -200,7 +250,10 @@ public class GameManager : MonoBehaviour
         videoPlayer.targetTexture = videoRT;
 
         if (videoDisplayImage != null)
+        {
             videoDisplayImage.texture = videoRT;
+            videoDisplayImage.uvRect = new Rect(1f, 0f, -1f, 1f);  // 좌우 반전 (셀카 효과 — 카메라 프리뷰와 일관성)
+        }
         else
             Debug.LogWarning("[GameManager] videoDisplayImage 미연결 — 영상이 화면에 안 보일 수 있음");
 
@@ -248,17 +301,20 @@ public class GameManager : MonoBehaviour
     {
         UpdateVideoProgress();
         UpdatePulseScale();
+        UpdateLoadingRotation();
 
 #if UNITY_EDITOR
+        // 에디터 전용: QR 패널에서 숫자 1 누르면 LanguagePanel로 스킵.
+        // 실제 세션이 없어서 마지막 제출 단계는 동작 안 함 (UI 흐름 테스트용).
         if (qrPanel != null && qrPanel.activeSelf && !isTransitioning
-            && Keyboard.current != null && Keyboard.current.sKey.wasPressedThisFrame)
+            && Keyboard.current != null && Keyboard.current.digit1Key.wasPressedThisFrame)
         {
-            Debug.LogWarning("[GameManager] QR 임시 스킵 (개발용). 실제 세션 없음 → 이후 결과 제출 불가.");
+            Debug.LogWarning("[GameManager] QR 임시 스킵 (개발용). 실제 세션 없음 → 결과 제출 불가, UI 흐름만 확인 가능.");
             StartCoroutine(TransitionTo(() =>
             {
-                titlePanel.SetActive(false);
-                qrPanel.SetActive(false);
-                genrePanel.SetActive(true);
+                if (titlePanel != null) titlePanel.SetActive(false);
+                if (qrPanel != null) qrPanel.SetActive(false);
+                if (languagePanel != null) languagePanel.SetActive(true);
             }));
         }
 #endif
@@ -285,6 +341,15 @@ public class GameManager : MonoBehaviour
         int min = totalSec / 60;
         int sec = totalSec % 60;
         return $"{min}:{sec:D2}";
+    }
+
+    // 항상 두 자리 분/초 (예: 30초 → "00:30", 9초 → "00:09")
+    string FormatMMSS(float seconds)
+    {
+        int totalSec = Mathf.CeilToInt(Mathf.Max(0f, seconds));
+        int min = totalSec / 60;
+        int sec = totalSec % 60;
+        return $"{min:D2}:{sec:D2}";
     }
 
     void OnVideoError(VideoPlayer vp, string error)
@@ -331,11 +396,8 @@ public class GameManager : MonoBehaviour
         if (headsetPanel != null) headsetPanel.SetActive(false);
         if (genrePanel != null) genrePanel.SetActive(false);
 
-        // 언어 선택 상태 리셋
-        selectedSourceLang = null;
+        // 언어 선택 상태 리셋 (Target만 선택, Source는 ko 고정)
         selectedTargetLang = null;
-        if (sourceLanguageButtons != null)
-            foreach (var b in sourceLanguageButtons) if (b != null) b.SetSelected(false);
         if (targetLanguageButtons != null)
             foreach (var b in targetLanguageButtons) if (b != null) b.SetSelected(false);
         UpdateLanguageNextButton();
@@ -352,6 +414,20 @@ public class GameManager : MonoBehaviour
             cameraOkButton.gameObject.SetActive(true);
             cameraOkButton.interactable = true;
         }
+
+        // Phase A(높이 조절 안내) 활성, Phase B/C 비활성으로 원복
+        if (cameraPhaseAGroup != null) cameraPhaseAGroup.SetActive(true);
+        if (cameraPhaseBGroup != null) cameraPhaseBGroup.SetActive(false);
+        if (cameraPhaseCGroup != null) cameraPhaseCGroup.SetActive(false);
+        if (recordingProgressFill != null) recordingProgressFill.fillAmount = 0f;
+        if (recordingRemainingTimeText != null) recordingRemainingTimeText.text = FormatMMSS(recordingDuration);
+
+        // 말하기 예시 안내 — Phase A에선 안 보이고 B 진입 시 켜짐. 닫힘 플래그만 원복.
+        speakingExamplesClosed = false;
+        if (speakingExamplesPanel != null) speakingExamplesPanel.SetActive(false);
+
+        // 카운트다운 스프라이트 초기화
+        if (cameraCountdownSpriteImage != null) cameraCountdownSpriteImage.gameObject.SetActive(false);
 
         // 녹음 상태 리셋
         if (recordingTimerCoroutine != null)
@@ -433,42 +509,32 @@ public class GameManager : MonoBehaviour
 
     // === 언어 선택 ===
 
-    // LanguageButton에서 호출. 같은 row 안에서 단일 선택으로 전환.
+    // LanguageButton에서 호출. Target row 단일 선택.
     public void OnLanguageButtonClicked(LanguageButton btn)
     {
         if (isTransitioning || btn == null) return;
 
-        if (btn.slot == LanguageButton.LangSlot.Source)
-        {
-            selectedSourceLang = btn.langCode;
-            if (sourceLanguageButtons != null)
-                foreach (var b in sourceLanguageButtons) if (b != null) b.SetSelected(b == btn);
-        }
-        else
-        {
-            selectedTargetLang = btn.langCode;
-            if (targetLanguageButtons != null)
-                foreach (var b in targetLanguageButtons) if (b != null) b.SetSelected(b == btn);
-        }
+        selectedTargetLang = btn.langCode;
+        if (targetLanguageButtons != null)
+            foreach (var b in targetLanguageButtons) if (b != null) b.SetSelected(b == btn);
 
-        Debug.Log($"[GameManager] 언어 선택 source={selectedSourceLang} target={selectedTargetLang}");
+        Debug.Log($"[GameManager] 언어 선택 source={SOURCE_LANG}(고정) target={selectedTargetLang}");
         UpdateLanguageNextButton();
     }
 
     void UpdateLanguageNextButton()
     {
         if (languageNextButton == null) return;
-        languageNextButton.interactable = !string.IsNullOrEmpty(selectedSourceLang)
-                                       && !string.IsNullOrEmpty(selectedTargetLang);
+        languageNextButton.interactable = !string.IsNullOrEmpty(selectedTargetLang);
     }
 
     // LanguagePanel의 "다음으로" 버튼 OnClick
     public void OnLanguageNext()
     {
         if (isTransitioning) return;
-        if (string.IsNullOrEmpty(selectedSourceLang) || string.IsNullOrEmpty(selectedTargetLang)) return;
+        if (string.IsNullOrEmpty(selectedTargetLang)) return;
 
-        Debug.Log($"[GameManager] 언어 확정 → 카메라 조정 화면 source={selectedSourceLang} target={selectedTargetLang}");
+        Debug.Log($"[GameManager] 언어 확정 → 카메라 조정 화면 source={SOURCE_LANG}(고정) target={selectedTargetLang}");
 
         StartCoroutine(TransitionTo(() =>
         {
@@ -486,17 +552,57 @@ public class GameManager : MonoBehaviour
         Debug.Log("[GameManager] 카메라 OK → 카운트다운 시작");
 
         if (cameraOkButton != null) cameraOkButton.interactable = false;
+
+        // Phase A → B 스왑 (높이 조절 안내 끄고, 녹음 안내 켜기)
+        if (cameraPhaseAGroup != null) cameraPhaseAGroup.SetActive(false);
+        if (cameraPhaseBGroup != null) cameraPhaseBGroup.SetActive(true);
+
+        // 말하기 예시 안내 — 사용자가 닫지 않았으면 활성
+        if (speakingExamplesPanel != null) speakingExamplesPanel.SetActive(!speakingExamplesClosed);
+
         cameraCountdownCoroutine = StartCoroutine(CameraCountdown());
     }
 
     IEnumerator CameraCountdown()
     {
-        for (int i = cameraCountdownStart; i >= 1; i--)
+        // 부모 Image는 스프라이트 4프레임을 0.25s 간격으로 순환 (1초당 한 바퀴)
+        // 자식 cameraCountdownText는 현재 남은 초(5→4→3→2→1) 표시
+        if (cameraCountdownSpriteImage != null) cameraCountdownSpriteImage.gameObject.SetActive(true);
+
+        float total = Mathf.Max(0.01f, cameraCountdownStart);
+        float frameDur = Mathf.Max(0.01f, cameraCountdownFrameDuration);
+        bool hasSprites = cameraCountdownSprites != null && cameraCountdownSprites.Length > 0;
+
+        float elapsed = 0f;
+        int lastFrame = -1;
+        int lastSecond = -1;
+        while (elapsed < total)
         {
-            if (cameraCountdownText != null) cameraCountdownText.text = i.ToString();
-            yield return new WaitForSeconds(1f);
+            if (hasSprites && cameraCountdownSpriteImage != null)
+            {
+                int frame = Mathf.FloorToInt(elapsed / frameDur) % cameraCountdownSprites.Length;
+                if (frame != lastFrame)
+                {
+                    cameraCountdownSpriteImage.sprite = cameraCountdownSprites[frame];
+                    lastFrame = frame;
+                }
+            }
+
+            if (cameraCountdownText != null)
+            {
+                int remaining = cameraCountdownStart - Mathf.FloorToInt(elapsed);
+                if (remaining != lastSecond)
+                {
+                    cameraCountdownText.text = remaining.ToString();
+                    lastSecond = remaining;
+                }
+            }
+
+            elapsed += Time.deltaTime;
+            yield return null;
         }
 
+        if (cameraCountdownSpriteImage != null) cameraCountdownSpriteImage.gameObject.SetActive(false);
         if (cameraCountdownText != null) cameraCountdownText.text = "";
         cameraCountdownCoroutine = null;
 
@@ -510,6 +616,15 @@ public class GameManager : MonoBehaviour
     {
         // OK 버튼 숨김
         if (cameraOkButton != null) cameraOkButton.gameObject.SetActive(false);
+
+        // Phase A/B 모두 끄고, Phase C(녹음 중) 켜기 + 게이지바 0부터 시작
+        if (cameraPhaseAGroup != null) cameraPhaseAGroup.SetActive(false);
+        if (cameraPhaseBGroup != null) cameraPhaseBGroup.SetActive(false);
+        if (cameraPhaseCGroup != null) cameraPhaseCGroup.SetActive(true);
+        if (recordingProgressFill != null) recordingProgressFill.fillAmount = 0f;
+
+        // 말하기 예시 안내 — B에서 닫혔으면 C에서도 계속 비활성, 안 닫혔으면 계속 표시
+        if (speakingExamplesPanel != null) speakingExamplesPanel.SetActive(!speakingExamplesClosed);
 
         // 파동/파형 활성화
         if (voicePulseImage != null)
@@ -552,6 +667,13 @@ public class GameManager : MonoBehaviour
 
     void StartTranslation()
     {
+        // 선택한 변환 언어 이미지/텍스트를 LoadingPanel에 반영
+        ApplyTargetLanguageDisplay();
+
+        // 말하기 예시 안내는 번역중 단계에서 숨김 (B/C에서만 노출).
+        // 플래그(speakingExamplesClosed)는 그대로 두고 비활성만 — 홈 복귀 시 ResetAllPanelsImmediate가 일괄 원복.
+        if (speakingExamplesPanel != null) speakingExamplesPanel.SetActive(false);
+
         // CameraPanel은 그대로 두고 (카메라 영상 유지), 자식 LoadingPanel만 오버레이로 활성화
         StartCoroutine(TransitionTo(() =>
         {
@@ -606,14 +728,30 @@ public class GameManager : MonoBehaviour
 
     // === VideoRecorder 이벤트 핸들러 ===
 
-    // 30초 진행률 (0~1). 30초 카운트다운 텍스트 갱신.
+    // 30초 진행률 (0~1). 게이지바 + 시간 텍스트 갱신.
     void HandleRecorderProgress(float progress01)
     {
+        float remaining = recordingDuration * (1f - progress01);
+
+        // 왼쪽 텍스트: "00:30" → "00:00" 형식 카운트다운
+        if (recordingRemainingTimeText != null)
+            recordingRemainingTimeText.text = FormatMMSS(remaining);
+
+        // (legacy) 기존 숫자 타이머 텍스트도 유지 — 미연결이면 무시
         if (recordingTimerText != null)
-        {
-            float remaining = recordingDuration * (1f - progress01);
             recordingTimerText.text = Mathf.CeilToInt(Mathf.Max(0f, remaining)).ToString();
-        }
+
+        // 게이지바 (왼쪽에서 오른쪽으로 채워짐)
+        if (recordingProgressFill != null)
+            recordingProgressFill.fillAmount = Mathf.Clamp01(progress01);
+    }
+
+    // 말하기 예시 패널의 X(닫기) 버튼 OnClick — 안내만 끄고 진행은 계속.
+    // 한 번 닫으면 Phase B → C 전환 시에도 다시 안 뜸. ResetAllPanelsImmediate에서 원복.
+    public void OnCloseSpeakingExamples()
+    {
+        speakingExamplesClosed = true;
+        if (speakingExamplesPanel != null) speakingExamplesPanel.SetActive(false);
     }
 
     // 30초 녹화 타이머 종료 즉시 호출 (ffmpeg 합성은 백그라운드). LoadingPanel 즉시 활성.
@@ -679,6 +817,38 @@ public class GameManager : MonoBehaviour
 
         if (voicePulseImage != null)
             voicePulseImage.rectTransform.localScale = Vector3.one * pulseMinScale;
+    }
+
+    // LoadingPanel 활성 중에만 회전 이미지를 Z축으로 천천히 돌림
+    void UpdateLoadingRotation()
+    {
+        if (loadingRotatingImage == null) return;
+        if (loadingPanel == null || !loadingPanel.activeSelf) return;
+        loadingRotatingImage.Rotate(0f, 0f, -loadingRotationSpeed * Time.deltaTime);
+    }
+
+    // 선택한 변환 언어(selectedTargetLang)에 맞는 이미지/텍스트를 로딩 패널에 적용
+    void ApplyTargetLanguageDisplay()
+    {
+        if (targetLanguageDisplays == null) return;
+        if (string.IsNullOrEmpty(selectedTargetLang)) return;
+
+        foreach (var d in targetLanguageDisplays)
+        {
+            if (d == null) continue;
+            if (d.langCode != selectedTargetLang) continue;
+
+            if (loadingTargetLanguageImage != null)
+            {
+                loadingTargetLanguageImage.sprite = d.sprite;
+                loadingTargetLanguageImage.enabled = d.sprite != null;
+            }
+            if (loadingTargetLanguageText != null)
+                loadingTargetLanguageText.text = d.displayName ?? "";
+            return;
+        }
+
+        Debug.LogWarning($"[GameManager] targetLanguageDisplays에 '{selectedTargetLang}' 매핑 없음 — Inspector 확인.");
     }
 
     void UpdatePulseScale()
@@ -1148,6 +1318,9 @@ public class GameManager : MonoBehaviour
         if (isTransitioning) return;
         if (resultQRPanel == null) return;
 
+        // QR 팝업 동안 영상 일시정지 (오디오 정지)
+        if (videoPlayer != null && videoPlayer.isPlaying) videoPlayer.Pause();
+
         StartCoroutine(TransitionTo(() =>
         {
             resultQRPanel.SetActive(true);
@@ -1163,6 +1336,20 @@ public class GameManager : MonoBehaviour
     {
         if (isTransitioning) return;
         ResetToTitle();
+    }
+
+    // 결과 QR 팝업 - "X 닫기" 버튼 OnClick → 팝업 닫고 ResultPanel로 복귀
+    public void OnCloseResultQRClick()
+    {
+        if (isTransitioning) return;
+        if (resultQRPanel == null) return;
+
+        StartCoroutine(TransitionTo(() =>
+        {
+            resultQRPanel.SetActive(false);
+            // QR 팝업 닫으면 영상 재개
+            if (videoPlayer != null && videoPlayer.isPrepared) videoPlayer.Play();
+        }));
     }
 
     // === 홈/초기화 ===

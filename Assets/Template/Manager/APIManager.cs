@@ -8,11 +8,11 @@ using UnityEngine.Networking;
 // AI 보이스 시프트 결과 제출 API 매니저.
 //   POST /api/v1/experience/sessions/{sessionId}/result  (multipart/form-data)
 //     Header : X-Start-Token = {startToken}
-//     Fields : visitorVideo (binary mp4), outputLanguage (ko|en|ja|zh|es|fr)
+//     Fields : visitorVideo (binary mp4), outputLanguage (ko|ja|zh|en|de|ru)
 //     Resp   : 200(동기) data.result.contents.GENERATED_VIDEO
 //              202(비동기) data.sessionId → WebSocket RESULT_READY 대기
 //
-// 서버 스펙 상 sourceLanguage 필드는 없음 (서버가 음성에서 자동 인식).
+// 서버 스펙 상 sourceLanguage 필드는 없음 (서버가 음성에서 자동 인식 — 기획상 입력은 한국어 고정).
 public class APIManager : MonoBehaviour
 {
     public static APIManager Instance { get; private set; }

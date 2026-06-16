@@ -12,7 +12,13 @@
       "Bash(cp /tmp/zxing-extract/zxing.dll \"c:/Unity_Project/UiseongAIVoiceShift/Assets/Plugins/zxing.dll\")",
       "Bash(curl -L -o /tmp/ffmpeg.zip \"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\")",
       "Bash(unzip -l /tmp/ffmpeg.zip)",
-      "Bash(unzip -j -o /tmp/ffmpeg.zip \"ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe\" -d \"c:/Unity_Project/UiseongAIVoiceShift/Assets/StreamingAssets/ffmpeg/\")"
+      "Bash(unzip -j -o /tmp/ffmpeg.zip \"ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe\" -d \"c:/Unity_Project/UiseongAIVoiceShift/Assets/StreamingAssets/ffmpeg/\")",
+      "Bash(curl -L -o \"Assets/Template/Font/SourceHanSansK-Regular.otf\" \"https://github.com/adobe-fonts/source-han-sans/raw/release/SubsetOTF/KR/SourceHanSansK-Regular.otf\" -w \"HTTP %{http_code} size=%{size_download} bytes\\\\n\")",
+      "Bash(curl -sL \"https://api.github.com/repos/adobe-fonts/source-han-sans/releases/latest\")",
+      "Bash(rm -f \"Assets/Template/Font/SourceHanSansK-Regular.otf\")",
+      "Bash(curl -L -o \"/tmp/SourceHanSansSubsetOTF.zip\" \"https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/05_SourceHanSansSubsetOTF.zip\" -w \"HTTP %{http_code} size=%{size_download} bytes\\\\n\")",
+      "Bash(unzip -l SourceHanSansSubsetOTF.zip)",
+      "Bash(unzip -j -o /tmp/SourceHanSansSubsetOTF.zip \"SubsetOTF/KR/SourceHanSansKR-Regular.otf\" -d \"Assets/Template/Font/\")"
     ]
   }
 }
